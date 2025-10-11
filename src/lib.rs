@@ -329,8 +329,8 @@ where
                 break n;
             }
         };
-        assert!(ntouch <= FT6X06_MAX_NB_TOUCH as u8);
-        Ok(ntouch)
+        // Cap the number of touches to the maximum supported instead of asserting
+        Ok(core::cmp::min(ntouch, FT6X06_MAX_NB_TOUCH as u8))
     }
 
     /// Retrieve the FT6X06 firmware id
