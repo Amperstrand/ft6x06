@@ -7,7 +7,7 @@
 //!  ### Example
 //!
 //! ##### Initializing the Ft6x06 driver struct
-//! 		let mut touch = ft6x06::Ft6X06::new(i2c, addr, ts_int).unwrap();
+//!         let mut touch = ft6x06::Ft6X06::new(i2c, addr, ts_int).unwrap();
 
 #![no_std]
 #![no_main]
@@ -20,11 +20,8 @@ use heapless::Vec;
 use crate::constant::*;
 use core::marker::PhantomData;
 use embedded_hal as hal;
-use hal::blocking::{
-    delay::{DelayMs, DelayUs},
-    i2c,
-};
-use hal::digital::v2::OutputPin;
+use hal::digital::OutputPin;
+use hal::{delay::DelayNs, i2c::I2c};
 
 #[derive(Copy, Clone, Debug)]
 pub struct Ft6x06Capabilities {
@@ -150,7 +147,7 @@ pub struct GestureInit<I2C> {
 /// FT6x06 driver object.
 /// I2C bus type and its address are set.
 pub struct Ft6X06<I2C, TouchInterruptPin> {
-    i2c: PhantomData<I2C>,
+    i2c: I2C,
     addr: u8,
     interrupt: TouchInterruptPin,
 }
@@ -167,7 +164,7 @@ pub fn long_hard_reset<'a, RST, DELAY>(
 ) -> Result<(), &'a str>
 where
     RST: OutputPin,
-    DELAY: DelayUs<u32>,
+    DELAY: DelayNs,
 {
     rst.set_low().map_err(|_| "rst.set_low failed")?;
     delay.delay_us(10_000);
@@ -176,29 +173,27 @@ where
     Ok(())
 }
 
-impl<I2C, TouchInterruptPin: hal::digital::v2::InputPin, E> Ft6X06<I2C, TouchInterruptPin>
+impl<I2C, TouchInterruptPin: hal::digital::InputPin> Ft6X06<I2C, TouchInterruptPin>
 where
-    I2C: i2c::WriteRead<Error = E> + i2c::Write<Error = E>,
-    E: core::fmt::Debug,
+    I2C: I2c,
 {
     /// Creates a new sensor associated with an I2C peripheral.
     ///
     /// Phantom I2C ensures that whatever I2C bus the device was created on is the one that is used for all future interations.
-    pub fn new(_i2c: &I2C, addr: u8, interrupt: TouchInterruptPin) -> Result<Self, E> {
-        let ft6x06 = Ft6X06 {
-            i2c: PhantomData,
-            addr: addr,
+    pub fn new(i2c: I2C, addr: u8, interrupt: TouchInterruptPin) -> Self {
+        Self {
+            i2c,
+            addr,
             interrupt,
-        };
-        Ok(ft6x06)
+        }
     }
 
     /// Initialise device and disable interupt mode.
     /// FT6X06 should be calibrated once after each power up.
-    pub fn init(&mut self, i2c: &mut I2C, delay_source: &mut impl DelayMs<u32>) {
+    pub fn init(&mut self, delay_source: &mut impl DelayNs) {
         // -> Result<Self, E> {
         if FT6X06_AUTO_CALIBRATION_ENABLED {
-            self.ts_calibration(i2c, delay_source).unwrap();
+            self.ts_calibration(delay_source).unwrap();
         }
         // FT6X06_DisableIT(i2c)?;
         // Ok(*self)
@@ -206,7 +201,7 @@ where
 
     ///As the ft6X06 library owns the delay, the simplest way to
     /// deliver it to the callign code seems to be to return a function call.
-    pub fn delay_ms(&mut self, delay_source: &mut impl DelayMs<u32>, delay: u32) {
+    pub fn delay_ms(&mut self, delay_source: &mut impl DelayNs, delay: u32) {
         delay_source.delay_ms(delay);
     }
 
@@ -217,10 +212,11 @@ where
     }
 
     /// Read whether the FT5663 is in dev mode or not
-    pub fn dev_mode_r(&self, i2c: &mut I2C) -> Result<u8, E> {
+    pub fn dev_mode_r(&mut self) -> Result<u8, I2C::Error> {
         let mut buf: [u8; 1] = [0];
 
-        i2c.write_read(self.addr, &[FT6X06_DEV_MODE_REG], &mut buf)?;
+        self.i2c
+            .write_read(self.addr, &[FT6X06_DEV_MODE_REG], &mut buf)?;
 
         let mut value = buf[0];
         value &= FT6X06_DEV_MODE_BIT_MASK;
@@ -230,37 +226,38 @@ where
     }
 
     /// Put the FT5663 into dev mode
-    pub fn dev_mode_w(&self, i2c: &mut I2C, value: u8) -> Result<bool, E> {
+    pub fn dev_mode_w(&mut self, value: u8) -> Result<bool, I2C::Error> {
         let mut buf: [u8; 1] = [0];
 
-        i2c.write_read(self.addr, &[FT6X06_DEV_MODE_REG], &mut buf)?;
+        self.i2c
+            .write_read(self.addr, &[FT6X06_DEV_MODE_REG], &mut buf)?;
 
         let mut tmp = buf[0];
 
         tmp &= !FT6X06_DEV_MODE_BIT_MASK;
         tmp |= value << FT6X06_DEV_MODE_BIT_POSITION;
 
-        i2c.write(self.addr, &[tmp])?;
+        self.i2c.write(self.addr, &[tmp])?;
 
         Ok(value == 0)
     }
 
     /// Get the value of an 8 bit register
-    pub fn get_u8_reg(&self, i2c: &mut I2C, reg: u8) -> Result<u8, E> {
+    pub fn get_u8_reg(&mut self, reg: u8) -> Result<u8, I2C::Error> {
         let mut ibuf: [u8; 1] = [0];
-        i2c.write_read(self.addr, &[reg], &mut ibuf)?;
+        self.i2c.write_read(self.addr, &[reg], &mut ibuf)?;
         Ok(ibuf[0])
     }
 
     /// Set the value of an 8 bit register
-    pub fn set_u8_reg(&self, i2c: &mut I2C, reg: u8, val: u8) -> Result<(), E> {
+    pub fn set_u8_reg(&mut self, reg: u8, val: u8) -> Result<(), I2C::Error> {
         let obuf: [u8; 2] = [reg, val];
-        i2c.write(self.addr, &obuf)?;
+        self.i2c.write(self.addr, &obuf)?;
         Ok(())
     }
 
     /// Wait for the touchscreen interrupt to indicate touches
-    pub fn wait_touch_interrupt(&self) {
+    pub fn wait_touch_interrupt(&mut self) {
         while self
             .interrupt
             .is_high()
@@ -269,23 +266,19 @@ where
     }
 
     /// Run an internal calibration on the FT6X06
-    pub fn ts_calibration(
-        &mut self,
-        i2c: &mut I2C,
-        delay_source: &mut impl DelayMs<u32>,
-    ) -> Result<bool, &str> {
-        //} -> Result<Self, E> {
+    pub fn ts_calibration(&mut self, delay_source: &mut impl DelayNs) -> Result<bool, &str> {
+        //} -> Result<Self, I2C::Error> {
         let mut _ret = FT6X06_OK;
         let mut _nbr_attempt: u32;
         let mut _read_data: u8;
         let mut _end_calibration: u8;
 
-        let _result = self.dev_mode_w(i2c, FT6X06_DEV_MODE_FACTORY);
+        let _result = { self.dev_mode_w(FT6X06_DEV_MODE_FACTORY) };
 
         delay_source.delay_ms(300);
 
         for _attempt in 0..100 {
-            match self.dev_mode_r(i2c) {
+            match self.dev_mode_r() {
                 Err(_e) => return Err("Bad comms in ts_calibration"),
                 Ok(n) => {
                     if n == FT6X06_DEV_MODE_WORKING {
@@ -299,17 +292,21 @@ where
     }
 
     /// Read the touch device status
-    pub fn td_status(&self, i2c: &mut I2C) -> Result<u8, E> {
+    pub fn td_status(&mut self) -> Result<u8, I2C::Error> {
         let mut buf: [u8; 1] = [0];
-        i2c.write_read(self.addr, &[FT6X06_TD_STAT_REG], &mut buf)?;
+        self.i2c
+            .write_read(self.addr, &[FT6X06_TD_STAT_REG], &mut buf)?;
         Ok(buf[0])
     }
 
     /// Read the touch device chip ID. It should be 0x51 if it is the FT6X06 on the
     /// stm32f746 Discovery board
-    pub fn chip_id(&self, i2c: &mut I2C) -> Result<u8, &str> {
+    pub fn chip_id(&mut self) -> Result<u8, &str> {
         let mut buf: [u8; 1] = [0];
-        match i2c.write_read(self.addr, &[FT6X06_CHIP_ID_REG], &mut buf) {
+        match self
+            .i2c
+            .write_read(self.addr, &[FT6X06_CHIP_ID_REG], &mut buf)
+        {
             Err(_e) => Err("Chip ID call failed"),
             Ok(_a) => {
                 if buf[0] != FT6X06_ID {
@@ -322,9 +319,9 @@ where
     }
 
     /// Is the device being touched? If so, how many fingers?
-    pub fn detect_touch(&mut self, i2c: &mut I2C) -> Result<u8, E> {
+    pub fn detect_touch(&mut self) -> Result<u8, I2C::Error> {
         let ntouch = loop {
-            let n = self.td_status(i2c)?;
+            let n = self.td_status()?;
             if n > 0 {
                 break n;
             }
@@ -334,37 +331,45 @@ where
     }
 
     /// Retrieve the FT6X06 firmware id
-    pub fn firmware_id(&mut self, i2c: &mut I2C) -> Result<u8, &str> {
+    pub fn firmware_id(&mut self) -> Result<u8, &str> {
         let mut buf: [u8; 1] = [0];
-        match i2c.write_read(self.addr, &[FT6X06_FIRMID_REG], &mut buf) {
+        match self
+            .i2c
+            .write_read(self.addr, &[FT6X06_FIRMID_REG], &mut buf)
+        {
             Err(_e) => Err("Error getting firmware ID"),
             Ok(_d) => Ok(buf[0]),
         }
     }
 
     /// Retrieve the Gesture Init variable
-    pub fn gesture_radian_read(&mut self, i2c: &mut I2C) -> Result<u8, &str> {
+    pub fn gesture_radian_read(&mut self) -> Result<u8, &str> {
         let mut buf: [u8; 1] = [0];
-        match i2c.write_read(self.addr, &[FT6X06_RADIAN_VALUE_REG], &mut buf) {
+        match self
+            .i2c
+            .write_read(self.addr, &[FT6X06_RADIAN_VALUE_REG], &mut buf)
+        {
             Err(_e) => Err("Error getting Gesture Init: RADIAN VALUE REG"),
             Ok(_d) => Ok(buf[0]),
         }
     }
 
     /// Write the Gesture Init variable
-    pub fn gesture_radian_write(&self, i2c: &mut I2C, value: u8) -> Result<bool, E> {
+    pub fn gesture_radian_write(&mut self, value: u8) -> Result<bool, I2C::Error> {
         let mut buf: [u8; 1] = [value];
 
-        i2c.write_read(self.addr, &[FT6X06_RADIAN_VALUE_REG], &mut buf)?;
+        self.i2c
+            .write_read(self.addr, &[FT6X06_RADIAN_VALUE_REG], &mut buf)?;
 
         Ok(value == 0)
     }
 
     /// Fetch the touch data specified by touch_i
     /// touch_i should go from 1 to FT6X06_MAX_NB_TOUCH
-    pub fn get_touch(&mut self, i2c: &mut I2C, touch_i: u8) -> Result<TouchState, E> {
+    pub fn get_touch(&mut self, touch_i: u8) -> Result<TouchState, I2C::Error> {
         let mut buf: [u8; 6] = [0; 6];
-        i2c.write_read(self.addr, &[FT6X06_P1_XH_REG + 6 * (touch_i - 1)], &mut buf)?;
+        self.i2c
+            .write_read(self.addr, &[FT6X06_P1_XH_REG + 6 * (touch_i - 1)], &mut buf)?;
 
         // Tried copying the c code literally here. It makes no difference though
         let x: u16 = (FT6X06_P1_XH_TP_BIT_MASK & buf[0]) as u16 * 256 + buf[1] as u16;
@@ -381,9 +386,10 @@ where
 
     /// Fetch the touch data specified by touch_i
     /// touch_i should go from 1 to FT6X06_MAX_NB_TOUCH
-    pub fn get_multi_touch(&mut self, i2c: &mut I2C, touch_i: u8) -> Result<MultiTouch, E> {
+    pub fn get_multi_touch(&mut self, touch_i: u8) -> Result<MultiTouch, I2C::Error> {
         let mut buf: [u8; 12] = [0; 12];
-        i2c.write_read(self.addr, &[FT6X06_P1_XH_REG + 6 * (touch_i - 1)], &mut buf)?;
+        self.i2c
+            .write_read(self.addr, &[FT6X06_P1_XH_REG + 6 * (touch_i - 1)], &mut buf)?;
 
         let mut x: [u16; FT6X06_MAX_NB_TOUCH] = [0; FT6X06_MAX_NB_TOUCH];
         let mut y: [u16; FT6X06_MAX_NB_TOUCH] = [0; FT6X06_MAX_NB_TOUCH];
@@ -409,9 +415,10 @@ where
     }
 
     /// Get gestures interpreted by touchscreen
-    pub fn get_gesture(&mut self, i2c: &mut I2C) -> Result<GestureKind, E> {
+    pub fn get_gesture(&mut self) -> Result<GestureKind, I2C::Error> {
         let mut buf: [u8; 1] = [0];
-        i2c.write_read(self.addr, &[FT6X06_GEST_ID_REG], &mut buf)?;
+        self.i2c
+            .write_read(self.addr, &[FT6X06_GEST_ID_REG], &mut buf)?;
 
         let g: GestureKind = match buf[0] {
             FT6X06_GEST_ID_NO_GESTURE => GestureKind::None,
@@ -426,10 +433,10 @@ where
         Ok(g)
     }
 
-    pub fn get_coordinates(&mut self, i2c: &mut I2C) -> Result<(u16, u16), E> {
+    pub fn get_coordinates(&mut self, i2c: &mut I2C) -> Result<(u16, u16), I2C::Error> {
         self.wait_touch_interrupt();
-        let _ntouch = self.detect_touch(i2c)?;
-        let pt = self.get_touch(i2c, 1)?;
+        let _ntouch = self.detect_touch()?;
+        let pt = self.get_touch(1)?;
         Ok((pt.x, pt.y))
     }
 
