@@ -1,14 +1,16 @@
-//!
-//! A platform agnostic driver for FT6X06 touchscreen . Built using 'embedded-hal' traits.
+//! # FT6X06 Touchscreen Driver
+//! A poll-based platform agnostic driver for FT6X06 touchscreen . Built using 'embedded-hal' traits.
 //!
 //! The Touchscreen driver for FT6X06 series touch panel controller
 //!
-//!
-//!  ### Example
+//! ### Example
 //!
 //! ##### Initializing the Ft6x06 driver struct
-//!         let mut touch = ft6x06::Ft6X06::new(i2c, addr, ts_int).unwrap();
-
+//! ```no_run
+//! use ft6x06::Ft6X06;
+//! use embedded_hal::i2c::I2c;
+//! let mut touch = ft6x06::Ft6X06::new(i2c, addr, ts_int).unwrap();
+//! ```
 #![no_std]
 #![no_main]
 
@@ -107,6 +109,12 @@ pub enum GestureKind {
     Fault,
 }
 
+/// x,y touch coordinates
+pub struct TouchCoordinates {
+    pub x: u16,
+    pub y: u16,
+}
+
 // Gestures don't seem to work using values of control registers and reading radian_value_reg.
 // I tried working with the GestureInit struct and i2c bus to read gestures but failed.
 // I removed its impl but kept the struct to give idea of how it is implementated in C.
@@ -146,10 +154,9 @@ pub struct GestureInit<I2C> {
 
 /// FT6x06 driver object.
 /// I2C bus type and its address are set.
-pub struct Ft6X06<I2C, TouchInterruptPin> {
+pub struct Ft6X06<I2C> {
     i2c: I2C,
     addr: u8,
-    interrupt: TouchInterruptPin,
 }
 
 /// Perform a long hard reset, the FT66206 needs at least 5mS ...
@@ -173,19 +180,15 @@ where
     Ok(())
 }
 
-impl<I2C, TouchInterruptPin: hal::digital::InputPin> Ft6X06<I2C, TouchInterruptPin>
+impl<I2C> Ft6X06<I2C>
 where
     I2C: I2c,
 {
     /// Creates a new sensor associated with an I2C peripheral.
     ///
     /// Phantom I2C ensures that whatever I2C bus the device was created on is the one that is used for all future interations.
-    pub fn new(i2c: I2C, addr: u8, interrupt: TouchInterruptPin) -> Self {
-        Self {
-            i2c,
-            addr,
-            interrupt,
-        }
+    pub fn new(i2c: I2C, addr: u8) -> Self {
+        Self { i2c, addr }
     }
 
     /// Initialise device and disable interupt mode.
@@ -256,14 +259,14 @@ where
         Ok(())
     }
 
-    /// Wait for the touchscreen interrupt to indicate touches
-    pub fn wait_touch_interrupt(&mut self) {
-        while self
-            .interrupt
-            .is_high()
-            .unwrap_or_else(|_| panic!("trouble checking interrupt"))
-        {}
-    }
+    // /// Wait for the touchscreen interrupt to indicate touches
+    // pub fn wait_touch_interrupt(&mut self) {
+    //     while self
+    //         .interrupt
+    //         .is_high()
+    //         .unwrap_or_else(|_| panic!("trouble checking interrupt"))
+    //     {}
+    // }
 
     /// Run an internal calibration on the FT6X06
     pub fn ts_calibration(&mut self, delay_source: &mut impl DelayNs) -> Result<bool, &str> {
@@ -433,13 +436,53 @@ where
         Ok(g)
     }
 
-    pub fn get_coordinates(&mut self, i2c: &mut I2C) -> Result<(u16, u16), I2C::Error> {
-        self.wait_touch_interrupt();
-        let _ntouch = self.detect_touch()?;
+    // pub fn get_coordinates(&mut self) -> Result<(u16, u16), I2C::Error> {
+    //     self.wait_touch_interrupt();
+    //     let _ntouch = self.detect_touch()?;
+    //     let pt = self.get_touch(1)?;
+    //     Ok((pt.x, pt.y))
+    // }
+
+    /// Non-blocking: poll the touch controller once and return coordinates if a touch is present.
+    ///
+    /// Returns:
+    ///  - Ok(None) if no touch is present
+    ///  - Ok(Some((x,y))) if a touch is present (first contact)
+    ///  - Err(e) for I2C errors
+    pub fn poll_coordinates_nonblocking(&mut self) -> Result<Option<TouchCoordinates>, I2C::Error> {
+        // Query number-of-touches register once
+        let n = self.td_status()?;
+
+        if n == 0 {
+            return Ok(None);
+        }
+
+        // If at least one touch, read first touch point
         let pt = self.get_touch(1)?;
-        Ok((pt.x, pt.y))
+        Ok(Some(TouchCoordinates { x: pt.x, y: pt.y }))
     }
 
+    /// Non-blocking: poll for multi-touch data (reads up to FT6X06_MAX_NB_TOUCH).
+    ///
+    /// Returns:
+    ///  - Ok(None) if no touch is present
+    ///  - Ok(Some(MultiTouch)) when touches present
+    ///  - Err(e) for I2C errors
+    pub fn poll_multi_touch_nonblocking(&mut self) -> Result<Option<MultiTouch>, I2C::Error> {
+        let n = match self.td_status() {
+            Ok(v) => v,
+            Err(e) => return Err(e),
+        };
+
+        if n == 0 {
+            return Ok(None);
+        }
+
+        // Read all touches in a single read if you prefer; reuse get_multi_touch which reads 12 bytes
+        // (current get_multi_touch signature expects a touch_i; we'll call it with touch_i=1 and parse as already implemented)
+        let mt = self.get_multi_touch(1)?;
+        Ok(Some(mt))
+    }
     //    /// Logic for getting the gesture.
     //    #[cfg(feature = "gesture")]
     //    pub fn gest_logic(&mut self, i2c: &mut I2C) -> Result<GestureKind, &str> {
