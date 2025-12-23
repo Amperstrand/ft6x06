@@ -110,6 +110,7 @@ pub enum GestureKind {
 }
 
 /// x,y touch coordinates
+#[derive(Clone, Copy, Debug, PartialOrd, Ord, Eq, PartialEq)]
 pub struct TouchCoordinates {
     pub x: u16,
     pub y: u16,
